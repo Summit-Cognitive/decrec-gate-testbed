@@ -1,0 +1,14 @@
+{
+  "repository": "Summit-Cognitive/decrec-gate-testbed",
+  "default_branch": "main",
+  "required_status_check": "decrec-gate / admissibility",
+  "required_approving_reviews": 1,
+  "require_code_owner_reviews": true,
+  "dismiss_stale_reviews": true,
+  "enforce_admins": true,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "self_hosted_runners": false,
+  "repository_secrets_expected": 0,
+  "production_source_commit": "4454a72d8089f80b99bcb0c38e06015048496717"
+}

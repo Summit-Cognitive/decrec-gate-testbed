@@ -1,0 +1,3 @@
+/.github/ @BrianCLong
+/scripts/ci/verify_decrec_admissibility.mjs @BrianCLong
+/scripts/ci/verify_decrec_admissibility.selftest.mjs @BrianCLong

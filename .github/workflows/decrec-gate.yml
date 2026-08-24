@@ -1,0 +1,115 @@
+name: decrec-gate
+
+# The decision-receipt admissibility gate.
+#
+# Until this existed, the policy evaluator produced a verdict and nothing
+# consumed it. Five pull requests were refused between 9 and 21 August 2026 and
+# all five merged, the fastest four minutes later, because no required status
+# check ever read the verdict.
+#
+# Deliberate design decisions. Do not "optimise" these away:
+#
+#  1. THE GATE DOES NOT COME FROM THE PULL REQUEST. The first checkout is the
+#     BASE commit, into .gate/, and the checker runs from there. A gate that
+#     executes code supplied by the change it is judging is not a gate. The
+#     earlier draft of this file checked out the PR and ran the checker from that
+#     tree; a one-line diff made it admit everything while the self-test still
+#     reported 6 of 6, because every self-test case points at 127.0.0.1 and the
+#     added line only fired against production. That is exactly the shape of the
+#     defect this gate exists to prevent.
+#
+#     Because of this, `scripts/ci/verify_decrec_admissibility*.mjs` must also be
+#     protected by CODEOWNERS with a required review. Otherwise the bypass is a
+#     two-pull-request sequence instead of a one-line diff.
+#
+#  2. NO path filtering and NO prose-only skip. Every pull request is gated. Two
+#     of the five that merged after a refusal were prose-only, and the
+#     surrounding pr-gate lanes skip their steps on prose-only changes. A
+#     required check that skips itself is not a control.
+#
+#  3. Fail closed. No receipt, wrong commit, wrong repository, withheld body,
+#     missing policy block, unreachable API and malformed response all fail.
+#     Absence must not pass.
+#
+#  4. The ledger base is pinned here and the checker refuses any other value.
+#     Leaving it to the ambient runner environment means anyone who can run code
+#     on the runner can point the gate at their own always-accept ledger.
+#
+#  5. The self-test runs first, from the base tree, and asserts that requests
+#     were actually made, not merely that exit codes came back.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+  # Lets a red gate be re-driven once a receipt is minted, without a new push.
+  check_run:
+    types: [rerequested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  # Key on the head sha so a re-run for the same code is deduplicated but a new
+  # commit is not. Never cancel a merge_group run: a cancelled required check
+  # stalls the queue.
+  group: >-
+    decrec-gate-${{ github.event.pull_request.head.sha
+                 || github.event.merge_group.head_sha
+                 || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  admissibility:
+    name: decrec-gate / admissibility
+    # Not a persistent self-hosted runner. This job must never execute code from
+    # the pull request, and a long-lived runner that has is compromised for every
+    # later run.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The gate, from the BASE of the pull request. Never from the PR itself.
+      - name: Checkout the gate from the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: >-
+            ${{ github.event.pull_request.base.sha
+             || github.event.merge_group.base_sha
+             || github.event.repository.default_branch }}
+          path: .gate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup Node 20
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20.20.2"
+
+      # A gate that cannot demonstrate a refusal is indistinguishable from one
+      # that always admits. Prove it can fail, and prove it actually talks to a
+      # ledger, before trusting it to pass.
+      - name: Gate self-test
+        working-directory: .gate
+        run: node scripts/ci/verify_decrec_admissibility.selftest.mjs
+
+      - name: Verify decision receipt admissibility
+        working-directory: .gate
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          # merge_group carries no pull_request object. Without the fallback both
+          # variables render empty, the checker exits 2, and every queued merge
+          # fails for a reason nobody connects to this file.
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          HEAD_SHA: >-
+            ${{ github.event.pull_request.head.sha
+             || github.event.merge_group.head_sha }}
+          DECREC_BASE: https://decrec.summitcognitive.ai
+          DECREC_MAX_PAGES: "40"
+          # Pin the policy the verdict must have been produced under. The ledger
+          # contains two distinct policies that both call themselves policy-v1.0,
+          # with different thresholds; accepting either would make the gate's
+          # verdict mean one of two things.
+          DECREC_POLICY_HASHES: c4e991f3b6269061f5cc02e423c16ac96cc24cab21e916b4351227efebdbd8ed
+        run: node scripts/ci/verify_decrec_admissibility.mjs
