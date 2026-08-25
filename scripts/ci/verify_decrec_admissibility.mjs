@@ -24,6 +24,7 @@
 //   HEAD_SHA               full head commit sha
 //   DECREC_BASE            pinned by the workflow; only https to the allowed host
 //   DECREC_MAX_PAGES       default 40
+//   DECREC_WAIT_MS         how long to wait for a receipt to be minted, default 120000
 //   DECREC_POLICY_HASHES   comma-separated allowlist; empty means do not check
 //   DECREC_REPO_ALIASES    comma-separated historical repository names to accept
 //
@@ -33,6 +34,8 @@ const ALLOWED_HOSTS = new Set(["decrec.summitcognitive.ai"]);
 
 const RAW_BASE = process.env.DECREC_BASE || "https://decrec.summitcognitive.ai";
 const MAX_PAGES = Number(process.env.DECREC_MAX_PAGES || 40);
+const WAIT_MS = Number(process.env.DECREC_WAIT_MS ?? 120000);
+const POLL_MS = 5000;
 const REPO = process.env.GITHUB_REPOSITORY || "";
 const PR = process.env.PR_NUMBER || "";
 const HEAD_SHA = process.env.HEAD_SHA || "";
@@ -53,6 +56,7 @@ const refuse = (...lines) => die(1, ["decrec-gate: REFUSED", ...lines.map(l => "
 if (!REPO || !HEAD_SHA) die(2, "decrec-gate: missing GITHUB_REPOSITORY or HEAD_SHA. Failing closed.");
 if (!/^[0-9a-f]{40}$/.test(HEAD_SHA)) die(2, `decrec-gate: HEAD_SHA ${JSON.stringify(HEAD_SHA)} is not a full sha. Failing closed.`);
 if (!Number.isInteger(MAX_PAGES) || MAX_PAGES < 1) die(2, `decrec-gate: DECREC_MAX_PAGES ${JSON.stringify(process.env.DECREC_MAX_PAGES)} is not a positive integer. Failing closed.`);
+if (!Number.isFinite(WAIT_MS) || WAIT_MS < 0) die(2, `decrec-gate: DECREC_WAIT_MS ${JSON.stringify(process.env.DECREC_WAIT_MS)} is not a non-negative number. Failing closed.`);
 
 // The base must be pinned. An attacker who can set this env var can stand up an
 // always-accept ledger; refusing anything but the allowed host over https makes
@@ -144,9 +148,26 @@ const DESCRIBE = PR ? `pull request ${PR} at ${sha7}` : `commit ${sha7}`;
     die(2, `decrec-gate: could not reach the ledger (${err.message}). Failing closed.`);
   }
 
-  let found, pagesWalked, exhausted;
-  try { ({ found, pagesWalked, exhausted } = await findEntries(claimMatches)); }
-  catch (err) { die(2, `decrec-gate: could not read the ledger (${err.message}). Failing closed.`); }
+  // Minting is asynchronous. GitHub delivers the webhook to the ledger and starts
+  // this workflow at the same instant, so on a fresh head the receipt can be a few
+  // seconds behind the run. Poll for a bounded budget before concluding absence.
+  //
+  // This does NOT weaken fail-closed: when the budget runs out the gate still
+  // refuses, and every binding check below is unchanged. It exists because a
+  // merge_group run has no re-drive path -- there is no pull request to push to
+  // and no check run to re-request -- so a red caused purely by minting latency
+  // stalls the merge queue instead of costing one re-run.
+  let found = [], pagesWalked = 0, exhausted = false;
+  const deadline = Date.now() + WAIT_MS;
+  for (;;) {
+    try { ({ found, pagesWalked, exhausted } = await findEntries(claimMatches)); }
+    catch (err) { die(2, `decrec-gate: could not read the ledger (${err.message}). Failing closed.`); }
+    if (found.length) break;
+    const left = deadline - Date.now();
+    if (left <= 0) break;
+    console.log(`decrec-gate: no receipt for ${DESCRIBE} yet; waiting for minting (${Math.ceil(left / 1000)}s of budget left)`);
+    await new Promise(r => setTimeout(r, Math.min(POLL_MS, left)));
+  }
 
   if (!found.length) {
     // Distinguish "searched the whole chain and it is not there" from "ran out of

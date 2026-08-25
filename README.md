@@ -13,17 +13,22 @@ administrative control-plane action, not a bypass of a still-enabled check.
 ## Production-source identity
 
 The three gate files were copied from `Summit-Cognitive/summit` commit
-`4454a72d8089f80b99bcb0c38e06015048496717`:
+`d985a2b9a45bf9c2e9988ab9510cce4ed36a94d8`:
 
 | File | SHA-256 |
 |---|---|
 | `.github/workflows/decrec-gate.yml` | `891b0714ad37c500f1e5a39ab64b987dfb2c0cb476bc28b2e9d55926803568aa` |
-| `scripts/ci/verify_decrec_admissibility.mjs` | `43eaca47964636a29945d9a8b625d606451fe6d562d70baea6cce772a88e6416` |
-| `scripts/ci/verify_decrec_admissibility.selftest.mjs` | `773379ae0c384d02e61d7044d7721136bb850a73994b10f91ba366e6535bcd0d` |
+| `scripts/ci/verify_decrec_admissibility.mjs` | `2a3e9ab50e7e4d3ba2959e0a69b735f2f01346a603e8c39cfe09b97dcadf08a8` |
+| `scripts/ci/verify_decrec_admissibility.selftest.mjs` | `e22343a3475828aa985ee2cac5e34a1a4284f84dd24f6738cb4cc0949dcc0a27` |
 
 The workflow checks out these files from the base commit, not from the pull
 request it judges. A pull request can edit the gate, but those edited bytes do
 not judge that same pull request.
+
+The testbed currently requires the context by name with no GitHub App binding.
+Production binds the same context to GitHub Actions app ID `15368`. Before any
+external reviewer receives access, an administrator must apply that same app
+binding here and re-prove both the admitted and refused paths.
 
 ## Expected demonstrations
 

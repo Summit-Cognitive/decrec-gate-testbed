@@ -144,7 +144,12 @@ const server = createServer((req, res) => {
 
 const run = (env) => new Promise((resolve) => {
   const p = spawn(process.execPath, [CHECKER], {
+    // The stub mints synchronously, so no case here needs the wait-for-minting
+    // budget, and leaving it at its default would make every absence case sit out
+    // two minutes and blow the workflow timeout. One case below sets it back on
+    // purpose, to prove the wait is bounded and still refuses.
     env: { ...process.env, GITHUB_REPOSITORY: REPO, DECREC_MAX_PAGES: "60",
+      DECREC_WAIT_MS: "0",
       DECREC_POLICY_HASHES: POLICY, DECREC_REPO_ALIASES: "BrianCLong/summit", ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -215,6 +220,19 @@ server.listen(0, async () => {
     await run({ DECREC_BASE: "https://evil.example.com", PR_NUMBER: "101", HEAD_SHA: SHA(1) }));
   check("a non-integer page limit fails closed", { code: 2 },
     await run({ ...E(101, SHA(1)), DECREC_MAX_PAGES: "x" }));
+  check("a negative wait budget fails closed", { code: 2 },
+    await run({ ...E(101, SHA(1)), DECREC_WAIT_MS: "-1" }));
+  {
+    // Waiting for a receipt to be minted must be BOUNDED and must still refuse.
+    // A wait that admits on timeout, or that never ends, would turn the merge
+    // queue's required check into a no-op.
+    const started = Date.now();
+    const got = await run({ ...E(999, SHA(1)), DECREC_WAIT_MS: "1500" });
+    const elapsed = Date.now() - started;
+    check("a bounded wait for minting still refuses", { code: 1, says: "no decision receipt" }, got,
+      () => (elapsed >= 1500 && elapsed < 30000) ? null
+        : `wait budget was not honoured (elapsed ${elapsed}ms)`);
+  }
 
   server.close();
   console.log("=".repeat(78));
