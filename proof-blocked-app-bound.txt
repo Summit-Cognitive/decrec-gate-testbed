@@ -1,0 +1,1 @@
+Synthetic refused-path proof after GitHub App binding. Intentionally under-evidenced.
