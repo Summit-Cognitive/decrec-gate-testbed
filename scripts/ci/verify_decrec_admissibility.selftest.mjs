@@ -107,6 +107,9 @@ add(25, 115, SHA(7).replace(/^7/, "0"), "ACCEPTED", { receipt: { ...body(115, SH
 // an unexpected check name alongside the nine
 add(26, 116, SHA(8).replace(/^8/, "1"), "ACCEPTED", { receipt: { ...body(116, SHA(8).replace(/^8/, "1")).receipt,
   policy: { status: "PASS", version: "policy-v1.0", checks: [...passing(), { name: "always_true", status: "PASS", detail: "" }] } } });
+// A current accepted target kept in the visible head window for the
+// mixed-repository genesis regression below.
+add(92, 117, SHA(9), "ACCEPTED", body(117, SHA(9)));
 // listing entry with no ts at all: must not be able to sort itself to the front
 LEDGER.push({ ...entry(1, 113, SHA(5).replace(/^5/, "e"), "ACCEPTED", "r-113"), ts: undefined });
 RECEIPTS["r-113"] = body(113, SHA(5).replace(/^5/, "e"));
@@ -118,22 +121,45 @@ RECEIPTS["r-113-late"] = { receipt: { ...body(113, SHA(5).replace(/^5/, "e")).re
 
 LEDGER.sort((a, b) => a.chain_sequence - b.chain_sequence);
 
-// The stub paginates the way production does: entries within a page ascend by
-// chain_sequence, pages walk backwards, next_before is the lowest sequence
-// returned. Small pages so the split-claim case really straddles a boundary.
+// The stub paginates the way production does today: entries within a page
+// ascend by chain_sequence, pages walk backwards, and any sequence-1 row makes
+// next_before null. Small pages so the split-claim case really straddles a
+// boundary.
 let ledgerHits = 0, receiptHits = 0;
+let mixedRepositoryGenesis = false;
+let staleVerdictGap = false;
 const PAGE = 4;
+const FOREIGN_GENESIS = {
+  ...entry(1, 777, SHA(7), "ACCEPTED", "r-foreign-genesis"),
+  repository: "Summit-Cognitive/other-repository",
+};
+const STALE_GAP_SHA = SHA(8).replace(/^8/, "2");
+const STALE_GAP_LEDGER = [
+  entry(2, 118, STALE_GAP_SHA, "ACCEPTED", "r-118-old"),
+  entry(90, 118, STALE_GAP_SHA, "POLICY_FAILURE", "r-118-new"),
+  entry(91, 701, SHA(1), "ACCEPTED", "r-gap-filler-91"),
+  entry(92, 702, SHA(2), "ACCEPTED", "r-gap-filler-92"),
+  entry(93, 703, SHA(3), "ACCEPTED", "r-gap-filler-93"),
+  { ...entry(5, 777, SHA(7), "ACCEPTED", "r-gap-foreign"), repository: "Summit-Cognitive/other-repository" },
+];
+RECEIPTS["r-118-old"] = body(118, STALE_GAP_SHA);
+RECEIPTS["r-118-new"] = { receipt: { ...body(118, STALE_GAP_SHA).receipt,
+  policy: { status: "FAIL", version: "policy-v1.0", checks: passing() },
+  admissibility: { status: "POLICY_FAILURE", reasons: ["newer refusal"] } } };
 const server = createServer((req, res) => {
   const url = new URL(req.url, "http://x");
   res.setHeader("content-type", "application/json");
   if (url.pathname === "/v1/ledger") {
     ledgerHits++;
     const before = url.searchParams.get("before");
-    const pool = LEDGER.filter(e => before == null || e.chain_sequence < Number(before));
+    const source = staleVerdictGap ? STALE_GAP_LEDGER
+      : mixedRepositoryGenesis ? [...LEDGER, FOREIGN_GENESIS] : LEDGER;
+    const pool = source.filter(e => before == null || e.chain_sequence < Number(before));
     const page = pool.slice(-PAGE);
+    const lowest = page.length ? Math.min(...page.map(e => e.chain_sequence)) : null;
     return res.end(JSON.stringify({
-      entries: page, count: page.length, total: LEDGER.length,
-      next_before: page.length ? page[0].chain_sequence : null,
+      entries: page, count: page.length, total: source.length,
+      next_before: lowest !== null && lowest > 1 ? lowest : null,
     }));
   }
   const m = url.pathname.match(/^\/v1\/receipts\/(.+)$/);
@@ -185,6 +211,22 @@ server.listen(0, async () => {
     check("admitted receipt passes, and the gate really looked", { code: 0, says: "ADMITTED" }, got,
       () => (ledgerHits > l0 && receiptHits > r0) ? null
         : `no ledger/receipt request was made (ledger +${ledgerHits - l0}, receipt +${receiptHits - r0})`);
+  }
+
+  {
+    mixedRepositoryGenesis = true;
+    check("visible receipt survives a foreign genesis cursor", { code: 0, says: "ADMITTED" },
+      await run(E(117, SHA(9))));
+    check("foreign genesis cannot falsely prove whole-chain absence", { code: 2, says: "operational" },
+      await run(E(999, SHA(1))));
+    mixedRepositoryGenesis = false;
+  }
+
+  {
+    staleVerdictGap = true;
+    check("incomplete walk cannot admit a stale matching verdict", { code: 2, says: "newer verdict" },
+      await run(E(118, STALE_GAP_SHA)));
+    staleVerdictGap = false;
   }
 
   check("refused receipt fails", { code: 1, says: "REFUSED" }, await run(E(102, SHA(2))));
