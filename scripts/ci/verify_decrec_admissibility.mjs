@@ -101,6 +101,7 @@ async function getJson(url, tries = 3) {
 // on it. Confirmed at startup below.
 async function findEntries(match) {
   const found = [];
+  const seenCursors = new Set();
   let before = null, pagesWalked = 0, exhausted = false;
   for (let page = 0; page < MAX_PAGES; page++) {
     const d = await getJson(`${BASE}/v1/ledger?limit=200${before ? `&before=${before}` : ""}`);
@@ -108,8 +109,14 @@ async function findEntries(match) {
     pagesWalked++;
     if (!entries.length) { exhausted = true; break; }
     for (const e of entries) if (match(e)) found.push(e);
-    before = d.next_before;
-    if (!before) { exhausted = true; break; }
+    const next = d.next_before;
+    if (next == null) { exhausted = true; break; }
+    if (!Number.isSafeInteger(next) || next < 1)
+      throw new Error(`ledger returned invalid next_before cursor ${JSON.stringify(next)}`);
+    if ((before != null && next >= before) || seenCursors.has(next))
+      throw new Error(`ledger returned a non-advancing next_before cursor ${next}`);
+    seenCursors.add(next);
+    before = next;
   }
   // Do NOT stop at the first page containing a hit. Entries within a page are
   // ascending by chain_sequence while pages walk backwards, so a claim whose
@@ -133,17 +140,30 @@ const claimMatches = (e) => {
 const DESCRIBE = PR ? `pull request ${PR} at ${sha7}` : `commit ${sha7}`;
 
 (async () => {
-  // Prove the ledger honours (or at least does not silently mangle) what we ask
-  // it, once, before trusting a page walk. If two different pages come back
-  // identical the pagination is not working and a "no receipt" result would be
-  // meaningless.
+  // Prove the ledger honours (or at least does not silently mangle) its own
+  // advertised cursor once before trusting a page walk. The cursor must come
+  // from page one: chain sequences are scoped to a ledger chain, so a fixed
+  // value such as `before=100` can legitimately describe the same first page
+  // for a young repository whose latest sequence is below 100.
   try {
-    const [p1, p2] = await Promise.all([
-      getJson(`${BASE}/v1/ledger?limit=2`),
-      getJson(`${BASE}/v1/ledger?limit=2&before=100`),
-    ]);
-    const k = (d) => (d.entries || []).map(e => e.chain_sequence).join(",");
-    if (!k(p1) || k(p1) === k(p2)) die(2, "decrec-gate: the ledger did not honour pagination; a page walk cannot be trusted. Failing closed.");
+    const p1 = await getJson(`${BASE}/v1/ledger?limit=2`);
+    if (!Array.isArray(p1.entries) || !p1.entries.length)
+      die(2, "decrec-gate: the ledger returned no probe entries; a page walk cannot be trusted. Failing closed.");
+
+    const cursor = p1.next_before;
+    if (cursor == null) {
+      if (!Number.isSafeInteger(p1.total) || p1.total !== p1.entries.length)
+        die(2, "decrec-gate: the ledger omitted a pagination cursor before the declared end of the chain. Failing closed.");
+    } else {
+      if (!Number.isSafeInteger(cursor) || cursor < 1)
+        die(2, `decrec-gate: the ledger returned invalid probe cursor ${JSON.stringify(cursor)}. Failing closed.`);
+      const p2 = await getJson(`${BASE}/v1/ledger?limit=2&before=${encodeURIComponent(cursor)}`);
+      if (!Array.isArray(p2.entries))
+        die(2, "decrec-gate: the ledger returned a malformed second probe page. Failing closed.");
+      const k = (d) => JSON.stringify(d.entries.map(e => [e.chain_sequence, e.receipt_id, e.claim_id]));
+      if (k(p1) === k(p2))
+        die(2, "decrec-gate: the ledger did not honour pagination; a page walk cannot be trusted. Failing closed.");
+    }
   } catch (err) {
     die(2, `decrec-gate: could not reach the ledger (${err.message}). Failing closed.`);
   }

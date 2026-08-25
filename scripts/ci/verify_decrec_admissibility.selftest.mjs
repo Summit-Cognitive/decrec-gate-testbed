@@ -61,53 +61,56 @@ const add = (seq, pr, sha, admListing, doc) => {
   RECEIPTS[id] = doc;
 };
 
-add(101, 101, SHA(1), "ACCEPTED", body(101, SHA(1)));
-add(102, 102, SHA(2), "POLICY_FAILURE", { receipt: { ...body(102, SHA(2)).receipt,
+// Keep every sequence below 100. This is a regression fixture for the startup
+// pagination probe: a fixed `before=100` repeats page one on a young chain and
+// used to make both valid accepts and valid refusals fail as operational errors.
+add(11, 101, SHA(1), "ACCEPTED", body(101, SHA(1)));
+add(12, 102, SHA(2), "POLICY_FAILURE", { receipt: { ...body(102, SHA(2)).receipt,
   policy: { status: "FAIL", version: "policy-v1.0", checks: [...passing().slice(1),
     { name: "minimum_source_count", status: "FAIL", detail: "Source count 1; required 2" }] },
   admissibility: { status: "POLICY_FAILURE", reasons: ["Source count 1; required 2"] } } });
 // receipt bound to a different commit than the head we will ask about
-add(103, 103, SHA(3), "ACCEPTED", withSubject(body(103, SHA(3)), { commit: SHA(9) }));
+add(13, 103, SHA(3), "ACCEPTED", withSubject(body(103, SHA(3)), { commit: SHA(9) }));
 // listing says ACCEPTED, signed body says POLICY_FAILURE. The body must win.
-add(104, 104, SHA(4), "ACCEPTED", { receipt: { ...body(104, SHA(4)).receipt,
+add(14, 104, SHA(4), "ACCEPTED", { receipt: { ...body(104, SHA(4)).receipt,
   admissibility: { status: "POLICY_FAILURE", reasons: ["stub"] } } });
 // no admissibility block at all: must fail, must NOT fall back to the listing
-add(105, 105, SHA(5), "ACCEPTED", dropKey(body(105, SHA(5)), "admissibility"));
+add(15, 105, SHA(5), "ACCEPTED", dropKey(body(105, SHA(5)), "admissibility"));
 // withheld body, the exact shape four live receipts return today
-add(106, 106, SHA(6), "ACCEPTED", { receipt: { withheld: true, reason: "receipt body contains operator identity" } });
+add(16, 106, SHA(6), "ACCEPTED", { receipt: { withheld: true, reason: "receipt body contains operator identity" } });
 // empty object as the receipt document
-add(107, 107, SHA(7), "ACCEPTED", { receipt: {} });
+add(17, 107, SHA(7), "ACCEPTED", { receipt: {} });
 // null receipt wrapper
-add(108, 108, SHA(8), "ACCEPTED", { receipt: null });
+add(18, 108, SHA(8), "ACCEPTED", { receipt: null });
 // wrong repository in the signed body
-add(109, 109, SHA(1).replace(/^1/, "a"), "ACCEPTED", withSubject(body(109, SHA(1).replace(/^1/, "a")), { repository: "attacker/evil" }));
+add(19, 109, SHA(1).replace(/^1/, "a"), "ACCEPTED", withSubject(body(109, SHA(1).replace(/^1/, "a")), { repository: "attacker/evil" }));
 // evaluated under the other policy that also calls itself policy-v1.0
-add(110, 110, SHA(2).replace(/^2/, "b"), "ACCEPTED", { receipt: { ...body(110, SHA(2).replace(/^2/, "b")).receipt,
+add(20, 110, SHA(2).replace(/^2/, "b"), "ACCEPTED", { receipt: { ...body(110, SHA(2).replace(/^2/, "b")).receipt,
   evidence: { policy_hash: OTHER_POLICY } } });
 // policy PASS overall but one named check did not pass
-add(111, 111, SHA(3).replace(/^3/, "c"), "ACCEPTED", { receipt: { ...body(111, SHA(3).replace(/^3/, "c")).receipt,
+add(21, 111, SHA(3).replace(/^3/, "c"), "ACCEPTED", { receipt: { ...body(111, SHA(3).replace(/^3/, "c")).receipt,
   policy: { status: "PASS", version: "policy-v1.0",
     checks: passing().map(c => c.name === "human_approval" ? { ...c, status: "SKIP", detail: "absent" } : c) } } });
 // two receipts for one claim, split across a page boundary, newest is a refusal
 const SPLIT_SHA = SHA(4).replace(/^4/, "d");
 add(2, 112, SPLIT_SHA, "ACCEPTED", body(112, SPLIT_SHA));
-LEDGER.push(entry(400, 112, SPLIT_SHA, "POLICY_FAILURE", "r-112-late"));
+LEDGER.push(entry(90, 112, SPLIT_SHA, "POLICY_FAILURE", "r-112-late"));
 RECEIPTS["r-112-late"] = { receipt: { ...body(112, SPLIT_SHA).receipt,
   policy: { status: "FAIL", version: "policy-v1.0", checks: passing() },
   admissibility: { status: "POLICY_FAILURE", reasons: ["later refusal"] } } };
 // zero checks: must refuse, not admit with "checks=0/0 PASS"
-add(114, 114, SHA(6).replace(/^6/, "f"), "ACCEPTED", { receipt: { ...body(114, SHA(6).replace(/^6/, "f")).receipt,
+add(24, 114, SHA(6).replace(/^6/, "f"), "ACCEPTED", { receipt: { ...body(114, SHA(6).replace(/^6/, "f")).receipt,
   policy: { status: "PASS", version: "policy-v1.0", checks: [] } } });
 // a partial check set: eight of nine
-add(115, 115, SHA(7).replace(/^7/, "0"), "ACCEPTED", { receipt: { ...body(115, SHA(7).replace(/^7/, "0")).receipt,
+add(25, 115, SHA(7).replace(/^7/, "0"), "ACCEPTED", { receipt: { ...body(115, SHA(7).replace(/^7/, "0")).receipt,
   policy: { status: "PASS", version: "policy-v1.0", checks: passing().slice(0, 8) } } });
 // an unexpected check name alongside the nine
-add(116, 116, SHA(8).replace(/^8/, "1"), "ACCEPTED", { receipt: { ...body(116, SHA(8).replace(/^8/, "1")).receipt,
+add(26, 116, SHA(8).replace(/^8/, "1"), "ACCEPTED", { receipt: { ...body(116, SHA(8).replace(/^8/, "1")).receipt,
   policy: { status: "PASS", version: "policy-v1.0", checks: [...passing(), { name: "always_true", status: "PASS", detail: "" }] } } });
 // listing entry with no ts at all: must not be able to sort itself to the front
 LEDGER.push({ ...entry(1, 113, SHA(5).replace(/^5/, "e"), "ACCEPTED", "r-113"), ts: undefined });
 RECEIPTS["r-113"] = body(113, SHA(5).replace(/^5/, "e"));
-const REFUSED_113 = entry(401, 113, SHA(5).replace(/^5/, "e"), "POLICY_FAILURE", "r-113-late");
+const REFUSED_113 = entry(91, 113, SHA(5).replace(/^5/, "e"), "POLICY_FAILURE", "r-113-late");
 LEDGER.push(REFUSED_113);
 RECEIPTS["r-113-late"] = { receipt: { ...body(113, SHA(5).replace(/^5/, "e")).receipt,
   policy: { status: "FAIL", version: "policy-v1.0", checks: passing() },
