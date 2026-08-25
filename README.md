@@ -68,9 +68,16 @@ check run identifies its producer as GitHub Actions app ID `15368`:
   and check run `32805933260` failed with `REFUSED`, `POLICY_FAILURE`,
   `minimum_source_count`, and `source_type_diversity` failures.
 
-PR #4 is not a fresh positive merge proof because the independent-review gate
-still blocks it. PR #1 remains the earlier admitted-and-merged proof. PR #5 is
-open and refused by the required admissibility check.
+Exact-head merge API attempts produced the expected independent discrimination:
+
+- PR #4 returned HTTP 405 naming only the missing approving review; it did not
+  report a failing required status check.
+- PR #5 returned HTTP 405 naming both the missing approving review and failing
+  required status check `decrec-gate / admissibility`.
+
+Both PRs remain open at the same heads. PR #4 is not a fresh positive merge
+proof because the independent-review gate still blocks it. PR #1 remains the
+earlier admitted-and-merged proof.
 
 Public receipt metadata for this repository is expected. No Sythe user should
 be invited until the separate authorization instrument is reviewed and signed.
