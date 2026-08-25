@@ -24,6 +24,7 @@
 //   HEAD_SHA               full head commit sha
 //   DECREC_BASE            pinned by the workflow; only https to the allowed host
 //   DECREC_MAX_PAGES       default 40
+//   DECREC_WAIT_MS         how long to wait for a receipt to be minted, default 120000
 //   DECREC_POLICY_HASHES   comma-separated allowlist; empty means do not check
 //   DECREC_REPO_ALIASES    comma-separated historical repository names to accept
 //
@@ -33,6 +34,8 @@ const ALLOWED_HOSTS = new Set(["decrec.summitcognitive.ai"]);
 
 const RAW_BASE = process.env.DECREC_BASE || "https://decrec.summitcognitive.ai";
 const MAX_PAGES = Number(process.env.DECREC_MAX_PAGES || 40);
+const WAIT_MS = Number(process.env.DECREC_WAIT_MS ?? 120000);
+const POLL_MS = 5000;
 const REPO = process.env.GITHUB_REPOSITORY || "";
 const PR = process.env.PR_NUMBER || "";
 const HEAD_SHA = process.env.HEAD_SHA || "";
@@ -53,6 +56,7 @@ const refuse = (...lines) => die(1, ["decrec-gate: REFUSED", ...lines.map(l => "
 if (!REPO || !HEAD_SHA) die(2, "decrec-gate: missing GITHUB_REPOSITORY or HEAD_SHA. Failing closed.");
 if (!/^[0-9a-f]{40}$/.test(HEAD_SHA)) die(2, `decrec-gate: HEAD_SHA ${JSON.stringify(HEAD_SHA)} is not a full sha. Failing closed.`);
 if (!Number.isInteger(MAX_PAGES) || MAX_PAGES < 1) die(2, `decrec-gate: DECREC_MAX_PAGES ${JSON.stringify(process.env.DECREC_MAX_PAGES)} is not a positive integer. Failing closed.`);
+if (!Number.isFinite(WAIT_MS) || WAIT_MS < 0) die(2, `decrec-gate: DECREC_WAIT_MS ${JSON.stringify(process.env.DECREC_WAIT_MS)} is not a non-negative number. Failing closed.`);
 
 // The base must be pinned. An attacker who can set this env var can stand up an
 // always-accept ledger; refusing anything but the allowed host over https makes
@@ -97,21 +101,52 @@ async function getJson(url, tries = 3) {
 // on it. Confirmed at startup below.
 async function findEntries(match) {
   const found = [];
-  let before = null, pagesWalked = 0, exhausted = false;
+  const headFound = [];
+  const seenCursors = new Set();
+  let before = null, pagesWalked = 0, entriesRead = 0, expectedTotal = null, exhausted = false;
   for (let page = 0; page < MAX_PAGES; page++) {
     const d = await getJson(`${BASE}/v1/ledger?limit=200${before ? `&before=${before}` : ""}`);
     const entries = Array.isArray(d.entries) ? d.entries : [];
+    if (!Number.isSafeInteger(d.total) || d.total < 0)
+      throw new Error(`ledger returned invalid total ${JSON.stringify(d.total)}`);
+    if (expectedTotal == null) expectedTotal = d.total;
+    else if (d.total !== expectedTotal)
+      throw new Error(`ledger total changed during the page walk (${expectedTotal} to ${d.total})`);
     pagesWalked++;
-    if (!entries.length) { exhausted = true; break; }
-    for (const e of entries) if (match(e)) found.push(e);
-    before = d.next_before;
-    if (!before) { exhausted = true; break; }
+    entriesRead += entries.length;
+    if (entriesRead > expectedTotal)
+      throw new Error(`ledger returned ${entriesRead} entries from a declared total of ${expectedTotal}`);
+    if (!entries.length) { exhausted = entriesRead === expectedTotal; break; }
+    for (const e of entries) {
+      if (!match(e)) continue;
+      found.push(e);
+      if (page === 0) headFound.push(e);
+    }
+    // The file-backed endpoint returns the newest append window first. Once
+    // this claim is in that window, every omitted record is older and cannot
+    // supersede it. Avoid letting a later aggregate-cursor defect turn a safe
+    // head-page decision into an availability failure.
+    if (page === 0 && headFound.length) {
+      return { found: headFound, headFound, pagesWalked, entriesRead,
+        total: expectedTotal, exhausted: entriesRead === expectedTotal };
+    }
+    const next = d.next_before;
+    // The public endpoint currently aggregates independent repository chains.
+    // A chain_sequence=1 row therefore makes next_before null even when older
+    // aggregate rows remain. Only the declared total can prove exhaustion.
+    if (next == null) { exhausted = entriesRead === expectedTotal; break; }
+    if (!Number.isSafeInteger(next) || next < 1)
+      throw new Error(`ledger returned invalid next_before cursor ${JSON.stringify(next)}`);
+    if ((before != null && next >= before) || seenCursors.has(next))
+      throw new Error(`ledger returned a non-advancing next_before cursor ${next}`);
+    seenCursors.add(next);
+    before = next;
   }
   // Do NOT stop at the first page containing a hit. Entries within a page are
   // ascending by chain_sequence while pages walk backwards, so a claim whose
   // receipts straddle a page boundary would otherwise be decided by page
   // geometry rather than by the chain.
-  return { found, pagesWalked, exhausted };
+  return { found, headFound, pagesWalked, entriesRead, total: expectedTotal, exhausted };
 }
 
 // The claim id convention has already changed once inside this ledger's
@@ -129,36 +164,79 @@ const claimMatches = (e) => {
 const DESCRIBE = PR ? `pull request ${PR} at ${sha7}` : `commit ${sha7}`;
 
 (async () => {
-  // Prove the ledger honours (or at least does not silently mangle) what we ask
-  // it, once, before trusting a page walk. If two different pages come back
-  // identical the pagination is not working and a "no receipt" result would be
-  // meaningless.
+  // Validate the ledger's advertised cursor when one exists. The cursor must
+  // come from page one: chain sequences are scoped to a ledger chain, so a
+  // fixed value such as `before=100` can legitimately describe the same first
+  // page for a young repository whose latest sequence is below 100. A null
+  // cursor with more declared rows is a window limit, not proof of exhaustion;
+  // findEntries preserves that distinction below.
   try {
-    const [p1, p2] = await Promise.all([
-      getJson(`${BASE}/v1/ledger?limit=2`),
-      getJson(`${BASE}/v1/ledger?limit=2&before=100`),
-    ]);
-    const k = (d) => (d.entries || []).map(e => e.chain_sequence).join(",");
-    if (!k(p1) || k(p1) === k(p2)) die(2, "decrec-gate: the ledger did not honour pagination; a page walk cannot be trusted. Failing closed.");
+    const p1 = await getJson(`${BASE}/v1/ledger?limit=2`);
+    if (!Array.isArray(p1.entries) || !p1.entries.length)
+      die(2, "decrec-gate: the ledger returned no probe entries; a page walk cannot be trusted. Failing closed.");
+    if (!Number.isSafeInteger(p1.total) || p1.total < p1.entries.length)
+      die(2, `decrec-gate: the ledger returned invalid probe total ${JSON.stringify(p1.total)}. Failing closed.`);
+
+    const cursor = p1.next_before;
+    if (cursor != null) {
+      if (!Number.isSafeInteger(cursor) || cursor < 1)
+        die(2, `decrec-gate: the ledger returned invalid probe cursor ${JSON.stringify(cursor)}. Failing closed.`);
+      const p2 = await getJson(`${BASE}/v1/ledger?limit=2&before=${encodeURIComponent(cursor)}`);
+      if (!Array.isArray(p2.entries))
+        die(2, "decrec-gate: the ledger returned a malformed second probe page. Failing closed.");
+      const k = (d) => JSON.stringify(d.entries.map(e => [e.chain_sequence, e.receipt_id, e.claim_id]));
+      if (k(p1) === k(p2))
+        die(2, "decrec-gate: the ledger did not honour pagination; a page walk cannot be trusted. Failing closed.");
+    }
   } catch (err) {
     die(2, `decrec-gate: could not reach the ledger (${err.message}). Failing closed.`);
   }
 
-  let found, pagesWalked, exhausted;
-  try { ({ found, pagesWalked, exhausted } = await findEntries(claimMatches)); }
-  catch (err) { die(2, `decrec-gate: could not read the ledger (${err.message}). Failing closed.`); }
+  // Minting is asynchronous. GitHub delivers the webhook to the ledger and starts
+  // this workflow at the same instant, so on a fresh head the receipt can be a few
+  // seconds behind the run. Poll for a bounded budget before concluding absence.
+  //
+  // This does NOT weaken fail-closed: when the budget runs out the gate still
+  // refuses, and every binding check below is unchanged. It exists because a
+  // merge_group run has no re-drive path -- there is no pull request to push to
+  // and no check run to re-request -- so a red caused purely by minting latency
+  // stalls the merge queue instead of costing one re-run.
+  let found = [], headFound = [], pagesWalked = 0, entriesRead = 0, total = null, exhausted = false;
+  const deadline = Date.now() + WAIT_MS;
+  for (;;) {
+    try { ({ found, headFound, pagesWalked, entriesRead, total, exhausted } = await findEntries(claimMatches)); }
+    catch (err) { die(2, `decrec-gate: could not read the ledger (${err.message}). Failing closed.`); }
+    if (found.length) break;
+    const left = deadline - Date.now();
+    if (left <= 0) break;
+    console.log(`decrec-gate: no receipt for ${DESCRIBE} yet; waiting for minting (${Math.ceil(left / 1000)}s of budget left)`);
+    await new Promise(r => setTimeout(r, Math.min(POLL_MS, left)));
+  }
 
   if (!found.length) {
     // Distinguish "searched the whole chain and it is not there" from "ran out of
     // pages". The second is an operational failure, not a policy refusal, and
     // saying otherwise turns a red gate into an instruction to mint a receipt.
     if (!exhausted) {
-      die(2, `decrec-gate: no receipt for ${DESCRIBE} in the ${pagesWalked * 200} most recent ledger entries,\n` +
-             `  and the walk did not reach the start of the chain. This is an operational\n` +
-             `  limit, not a verdict. Raise DECREC_MAX_PAGES or add a server-side filter.`);
+      die(2, `decrec-gate: no receipt for ${DESCRIBE} after reading ${entriesRead} of ${total} declared ledger entries,\n` +
+             `  and the public cursor did not reach the start. This is an operational\n` +
+             `  limit, not a verdict. A global or repository-scoped cursor is required\n` +
+             `  to prove whole-ledger absence.`);
     }
     refuse(`no decision receipt anywhere in the chain for ${DESCRIBE}`,
            `A pull request with no receipt is not admissible.`);
+  }
+
+  // A match on the unbounded head page is safe to evaluate: every omitted
+  // append record is older. A match found only after following the aggregate
+  // per-repository cursor is safe only when the declared total proves that the
+  // walk was complete. Otherwise the cursor may have skipped a newer verdict
+  // for this same claim, and admitting an older match would fail open.
+  if (headFound.length) found = headFound;
+  else if (!exhausted) {
+    die(2, `decrec-gate: matching receipt(s) for ${DESCRIBE} were found only during an incomplete ledger walk\n` +
+           `  (${entriesRead} of ${total} declared entries). The aggregate cursor may have skipped a newer verdict.\n` +
+           `  This is an operational limit, not an admissibility decision.`);
   }
 
   // Most recent verdict wins, ordered by chain_sequence. The chain binds the

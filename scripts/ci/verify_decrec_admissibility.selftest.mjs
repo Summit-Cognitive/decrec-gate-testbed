@@ -61,53 +61,59 @@ const add = (seq, pr, sha, admListing, doc) => {
   RECEIPTS[id] = doc;
 };
 
-add(101, 101, SHA(1), "ACCEPTED", body(101, SHA(1)));
-add(102, 102, SHA(2), "POLICY_FAILURE", { receipt: { ...body(102, SHA(2)).receipt,
+// Keep every sequence below 100. This is a regression fixture for the startup
+// pagination probe: a fixed `before=100` repeats page one on a young chain and
+// used to make both valid accepts and valid refusals fail as operational errors.
+add(11, 101, SHA(1), "ACCEPTED", body(101, SHA(1)));
+add(12, 102, SHA(2), "POLICY_FAILURE", { receipt: { ...body(102, SHA(2)).receipt,
   policy: { status: "FAIL", version: "policy-v1.0", checks: [...passing().slice(1),
     { name: "minimum_source_count", status: "FAIL", detail: "Source count 1; required 2" }] },
   admissibility: { status: "POLICY_FAILURE", reasons: ["Source count 1; required 2"] } } });
 // receipt bound to a different commit than the head we will ask about
-add(103, 103, SHA(3), "ACCEPTED", withSubject(body(103, SHA(3)), { commit: SHA(9) }));
+add(13, 103, SHA(3), "ACCEPTED", withSubject(body(103, SHA(3)), { commit: SHA(9) }));
 // listing says ACCEPTED, signed body says POLICY_FAILURE. The body must win.
-add(104, 104, SHA(4), "ACCEPTED", { receipt: { ...body(104, SHA(4)).receipt,
+add(14, 104, SHA(4), "ACCEPTED", { receipt: { ...body(104, SHA(4)).receipt,
   admissibility: { status: "POLICY_FAILURE", reasons: ["stub"] } } });
 // no admissibility block at all: must fail, must NOT fall back to the listing
-add(105, 105, SHA(5), "ACCEPTED", dropKey(body(105, SHA(5)), "admissibility"));
+add(15, 105, SHA(5), "ACCEPTED", dropKey(body(105, SHA(5)), "admissibility"));
 // withheld body, the exact shape four live receipts return today
-add(106, 106, SHA(6), "ACCEPTED", { receipt: { withheld: true, reason: "receipt body contains operator identity" } });
+add(16, 106, SHA(6), "ACCEPTED", { receipt: { withheld: true, reason: "receipt body contains operator identity" } });
 // empty object as the receipt document
-add(107, 107, SHA(7), "ACCEPTED", { receipt: {} });
+add(17, 107, SHA(7), "ACCEPTED", { receipt: {} });
 // null receipt wrapper
-add(108, 108, SHA(8), "ACCEPTED", { receipt: null });
+add(18, 108, SHA(8), "ACCEPTED", { receipt: null });
 // wrong repository in the signed body
-add(109, 109, SHA(1).replace(/^1/, "a"), "ACCEPTED", withSubject(body(109, SHA(1).replace(/^1/, "a")), { repository: "attacker/evil" }));
+add(19, 109, SHA(1).replace(/^1/, "a"), "ACCEPTED", withSubject(body(109, SHA(1).replace(/^1/, "a")), { repository: "attacker/evil" }));
 // evaluated under the other policy that also calls itself policy-v1.0
-add(110, 110, SHA(2).replace(/^2/, "b"), "ACCEPTED", { receipt: { ...body(110, SHA(2).replace(/^2/, "b")).receipt,
+add(20, 110, SHA(2).replace(/^2/, "b"), "ACCEPTED", { receipt: { ...body(110, SHA(2).replace(/^2/, "b")).receipt,
   evidence: { policy_hash: OTHER_POLICY } } });
 // policy PASS overall but one named check did not pass
-add(111, 111, SHA(3).replace(/^3/, "c"), "ACCEPTED", { receipt: { ...body(111, SHA(3).replace(/^3/, "c")).receipt,
+add(21, 111, SHA(3).replace(/^3/, "c"), "ACCEPTED", { receipt: { ...body(111, SHA(3).replace(/^3/, "c")).receipt,
   policy: { status: "PASS", version: "policy-v1.0",
     checks: passing().map(c => c.name === "human_approval" ? { ...c, status: "SKIP", detail: "absent" } : c) } } });
 // two receipts for one claim, split across a page boundary, newest is a refusal
 const SPLIT_SHA = SHA(4).replace(/^4/, "d");
 add(2, 112, SPLIT_SHA, "ACCEPTED", body(112, SPLIT_SHA));
-LEDGER.push(entry(400, 112, SPLIT_SHA, "POLICY_FAILURE", "r-112-late"));
+LEDGER.push(entry(90, 112, SPLIT_SHA, "POLICY_FAILURE", "r-112-late"));
 RECEIPTS["r-112-late"] = { receipt: { ...body(112, SPLIT_SHA).receipt,
   policy: { status: "FAIL", version: "policy-v1.0", checks: passing() },
   admissibility: { status: "POLICY_FAILURE", reasons: ["later refusal"] } } };
 // zero checks: must refuse, not admit with "checks=0/0 PASS"
-add(114, 114, SHA(6).replace(/^6/, "f"), "ACCEPTED", { receipt: { ...body(114, SHA(6).replace(/^6/, "f")).receipt,
+add(24, 114, SHA(6).replace(/^6/, "f"), "ACCEPTED", { receipt: { ...body(114, SHA(6).replace(/^6/, "f")).receipt,
   policy: { status: "PASS", version: "policy-v1.0", checks: [] } } });
 // a partial check set: eight of nine
-add(115, 115, SHA(7).replace(/^7/, "0"), "ACCEPTED", { receipt: { ...body(115, SHA(7).replace(/^7/, "0")).receipt,
+add(25, 115, SHA(7).replace(/^7/, "0"), "ACCEPTED", { receipt: { ...body(115, SHA(7).replace(/^7/, "0")).receipt,
   policy: { status: "PASS", version: "policy-v1.0", checks: passing().slice(0, 8) } } });
 // an unexpected check name alongside the nine
-add(116, 116, SHA(8).replace(/^8/, "1"), "ACCEPTED", { receipt: { ...body(116, SHA(8).replace(/^8/, "1")).receipt,
+add(26, 116, SHA(8).replace(/^8/, "1"), "ACCEPTED", { receipt: { ...body(116, SHA(8).replace(/^8/, "1")).receipt,
   policy: { status: "PASS", version: "policy-v1.0", checks: [...passing(), { name: "always_true", status: "PASS", detail: "" }] } } });
+// A current accepted target kept in the visible head window for the
+// mixed-repository genesis regression below.
+add(92, 117, SHA(9), "ACCEPTED", body(117, SHA(9)));
 // listing entry with no ts at all: must not be able to sort itself to the front
 LEDGER.push({ ...entry(1, 113, SHA(5).replace(/^5/, "e"), "ACCEPTED", "r-113"), ts: undefined });
 RECEIPTS["r-113"] = body(113, SHA(5).replace(/^5/, "e"));
-const REFUSED_113 = entry(401, 113, SHA(5).replace(/^5/, "e"), "POLICY_FAILURE", "r-113-late");
+const REFUSED_113 = entry(91, 113, SHA(5).replace(/^5/, "e"), "POLICY_FAILURE", "r-113-late");
 LEDGER.push(REFUSED_113);
 RECEIPTS["r-113-late"] = { receipt: { ...body(113, SHA(5).replace(/^5/, "e")).receipt,
   policy: { status: "FAIL", version: "policy-v1.0", checks: passing() },
@@ -115,22 +121,45 @@ RECEIPTS["r-113-late"] = { receipt: { ...body(113, SHA(5).replace(/^5/, "e")).re
 
 LEDGER.sort((a, b) => a.chain_sequence - b.chain_sequence);
 
-// The stub paginates the way production does: entries within a page ascend by
-// chain_sequence, pages walk backwards, next_before is the lowest sequence
-// returned. Small pages so the split-claim case really straddles a boundary.
+// The stub paginates the way production does today: entries within a page
+// ascend by chain_sequence, pages walk backwards, and any sequence-1 row makes
+// next_before null. Small pages so the split-claim case really straddles a
+// boundary.
 let ledgerHits = 0, receiptHits = 0;
+let mixedRepositoryGenesis = false;
+let staleVerdictGap = false;
 const PAGE = 4;
+const FOREIGN_GENESIS = {
+  ...entry(1, 777, SHA(7), "ACCEPTED", "r-foreign-genesis"),
+  repository: "Summit-Cognitive/other-repository",
+};
+const STALE_GAP_SHA = SHA(8).replace(/^8/, "2");
+const STALE_GAP_LEDGER = [
+  entry(2, 118, STALE_GAP_SHA, "ACCEPTED", "r-118-old"),
+  entry(90, 118, STALE_GAP_SHA, "POLICY_FAILURE", "r-118-new"),
+  entry(91, 701, SHA(1), "ACCEPTED", "r-gap-filler-91"),
+  entry(92, 702, SHA(2), "ACCEPTED", "r-gap-filler-92"),
+  entry(93, 703, SHA(3), "ACCEPTED", "r-gap-filler-93"),
+  { ...entry(5, 777, SHA(7), "ACCEPTED", "r-gap-foreign"), repository: "Summit-Cognitive/other-repository" },
+];
+RECEIPTS["r-118-old"] = body(118, STALE_GAP_SHA);
+RECEIPTS["r-118-new"] = { receipt: { ...body(118, STALE_GAP_SHA).receipt,
+  policy: { status: "FAIL", version: "policy-v1.0", checks: passing() },
+  admissibility: { status: "POLICY_FAILURE", reasons: ["newer refusal"] } } };
 const server = createServer((req, res) => {
   const url = new URL(req.url, "http://x");
   res.setHeader("content-type", "application/json");
   if (url.pathname === "/v1/ledger") {
     ledgerHits++;
     const before = url.searchParams.get("before");
-    const pool = LEDGER.filter(e => before == null || e.chain_sequence < Number(before));
+    const source = staleVerdictGap ? STALE_GAP_LEDGER
+      : mixedRepositoryGenesis ? [...LEDGER, FOREIGN_GENESIS] : LEDGER;
+    const pool = source.filter(e => before == null || e.chain_sequence < Number(before));
     const page = pool.slice(-PAGE);
+    const lowest = page.length ? Math.min(...page.map(e => e.chain_sequence)) : null;
     return res.end(JSON.stringify({
-      entries: page, count: page.length, total: LEDGER.length,
-      next_before: page.length ? page[0].chain_sequence : null,
+      entries: page, count: page.length, total: source.length,
+      next_before: lowest !== null && lowest > 1 ? lowest : null,
     }));
   }
   const m = url.pathname.match(/^\/v1\/receipts\/(.+)$/);
@@ -144,7 +173,12 @@ const server = createServer((req, res) => {
 
 const run = (env) => new Promise((resolve) => {
   const p = spawn(process.execPath, [CHECKER], {
+    // The stub mints synchronously, so no case here needs the wait-for-minting
+    // budget, and leaving it at its default would make every absence case sit out
+    // two minutes and blow the workflow timeout. One case below sets it back on
+    // purpose, to prove the wait is bounded and still refuses.
     env: { ...process.env, GITHUB_REPOSITORY: REPO, DECREC_MAX_PAGES: "60",
+      DECREC_WAIT_MS: "0",
       DECREC_POLICY_HASHES: POLICY, DECREC_REPO_ALIASES: "BrianCLong/summit", ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -177,6 +211,22 @@ server.listen(0, async () => {
     check("admitted receipt passes, and the gate really looked", { code: 0, says: "ADMITTED" }, got,
       () => (ledgerHits > l0 && receiptHits > r0) ? null
         : `no ledger/receipt request was made (ledger +${ledgerHits - l0}, receipt +${receiptHits - r0})`);
+  }
+
+  {
+    mixedRepositoryGenesis = true;
+    check("visible receipt survives a foreign genesis cursor", { code: 0, says: "ADMITTED" },
+      await run(E(117, SHA(9))));
+    check("foreign genesis cannot falsely prove whole-chain absence", { code: 2, says: "operational" },
+      await run(E(999, SHA(1))));
+    mixedRepositoryGenesis = false;
+  }
+
+  {
+    staleVerdictGap = true;
+    check("incomplete walk cannot admit a stale matching verdict", { code: 2, says: "newer verdict" },
+      await run(E(118, STALE_GAP_SHA)));
+    staleVerdictGap = false;
   }
 
   check("refused receipt fails", { code: 1, says: "REFUSED" }, await run(E(102, SHA(2))));
@@ -215,6 +265,19 @@ server.listen(0, async () => {
     await run({ DECREC_BASE: "https://evil.example.com", PR_NUMBER: "101", HEAD_SHA: SHA(1) }));
   check("a non-integer page limit fails closed", { code: 2 },
     await run({ ...E(101, SHA(1)), DECREC_MAX_PAGES: "x" }));
+  check("a negative wait budget fails closed", { code: 2 },
+    await run({ ...E(101, SHA(1)), DECREC_WAIT_MS: "-1" }));
+  {
+    // Waiting for a receipt to be minted must be BOUNDED and must still refuse.
+    // A wait that admits on timeout, or that never ends, would turn the merge
+    // queue's required check into a no-op.
+    const started = Date.now();
+    const got = await run({ ...E(999, SHA(1)), DECREC_WAIT_MS: "1500" });
+    const elapsed = Date.now() - started;
+    check("a bounded wait for minting still refuses", { code: 1, says: "no decision receipt" }, got,
+      () => (elapsed >= 1500 && elapsed < 30000) ? null
+        : `wait budget was not honoured (elapsed ${elapsed}ms)`);
+  }
 
   server.close();
   console.log("=".repeat(78));
