@@ -39,6 +39,18 @@ binding here and re-prove both the admitted and refused paths.
 3. Editing the checker on the pull-request branch does not alter the result of
    that pull request because the base copy runs.
 
+## Refresh verification
+
+The production-aligned checker self-test passes 26/26 cases. Running that exact
+checker against the existing testbed evidence produces both control paths:
+
+- PR #1, head `82e134efa2986e3daba3acbae72d18a3b47f0d8c`, is `ADMITTED` and exits 0.
+- PR #2, head `2a6e9dd4f9a6d04972facf5412cc74675c1442cf`, is `REFUSED` and exits 1 because
+  `minimum_source_count` and `source_type_diversity` fail.
+
+This proves the refreshed checker preserves the earlier verdicts. It does not
+replace the required new two-path proof after the GitHub App binding is applied.
+
 Public receipt metadata for this repository is expected. No Sythe user should
 be invited until the separate authorization instrument is reviewed and signed.
 
