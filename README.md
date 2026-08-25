@@ -14,14 +14,14 @@ administrative control-plane action, not a bypass of a still-enabled check.
 
 The workflow is byte-identical to production commit
 `d985a2b9a45bf9c2e9988ab9510cce4ed36a94d8`. The checker and self-test are
-byte-identical to the final candidate on `Summit-Cognitive/summit` PR #37943 at
-`db04d694952e178240b5a0ec4ec479ac64de082c`:
+byte-identical to the current candidate on `Summit-Cognitive/summit` PR #37943 at
+`db4f17dd80fd8e70dc695e5d07881214dce172bb`:
 
 | File | Source state | SHA-256 |
 |---|---|---|
 | `.github/workflows/decrec-gate.yml` | production `d985a2b` | `891b0714ad37c500f1e5a39ab64b987dfb2c0cb476bc28b2e9d55926803568aa` |
-| `scripts/ci/verify_decrec_admissibility.mjs` | PR #37943 candidate `db04d69` | `33e8d7c62caa035d337250e990c804452cc97a062a5cd4063dbfee0ff10cfd0c` |
-| `scripts/ci/verify_decrec_admissibility.selftest.mjs` | PR #37943 candidate `db04d69` | `37f73feaa245f4233aa208f78df1bde40ec6ba8a263bef2a188cd50dabbb1278` |
+| `scripts/ci/verify_decrec_admissibility.mjs` | PR #37943 candidate `db4f17d` | `33e8d7c62caa035d337250e990c804452cc97a062a5cd4063dbfee0ff10cfd0c` |
+| `scripts/ci/verify_decrec_admissibility.selftest.mjs` | PR #37943 candidate `db4f17d` | `37f73feaa245f4233aa208f78df1bde40ec6ba8a263bef2a188cd50dabbb1278` |
 
 This refresh is therefore a candidate, not production-aligned, until PR #37943
 is independently reviewed and merged and the resulting production `main` bytes

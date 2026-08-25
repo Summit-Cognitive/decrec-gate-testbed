@@ -12,7 +12,7 @@
   "repository_secrets_expected": 0,
   "required_status_check_app_id": 15368,
   "production_workflow_source_commit": "d985a2b9a45bf9c2e9988ab9510cce4ed36a94d8",
-  "checker_candidate_commit": "db04d694952e178240b5a0ec4ec479ac64de082c",
+  "checker_candidate_commit": "db4f17dd80fd8e70dc695e5d07881214dce172bb",
   "checker_candidate_pr": 37943,
   "production_alignment": "pending_candidate_merge"
 }
