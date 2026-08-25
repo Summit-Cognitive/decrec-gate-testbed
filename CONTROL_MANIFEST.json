@@ -10,5 +10,9 @@
   "allow_deletions": false,
   "self_hosted_runners": false,
   "repository_secrets_expected": 0,
-  "production_source_commit": "d985a2b9a45bf9c2e9988ab9510cce4ed36a94d8"
+  "required_status_check_app_id": 15368,
+  "production_source_commit": "d985a2b9a45bf9c2e9988ab9510cce4ed36a94d8",
+  "checker_candidate_commit": "f6ed6bef7e4430d493e7611e36b7b31838c2d077",
+  "checker_candidate_pr": 37933,
+  "production_alignment": "pending_candidate_merge"
 }

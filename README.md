@@ -10,25 +10,33 @@ in force, `decrec-gate / admissibility` must succeed before `main` can merge.
 A repository administrator can change branch protection; that is an
 administrative control-plane action, not a bypass of a still-enabled check.
 
-## Production-source identity
+## Source identity
 
-The three gate files were copied from `Summit-Cognitive/summit` commit
-`d985a2b9a45bf9c2e9988ab9510cce4ed36a94d8`:
+The workflow is byte-identical to production commit
+`d985a2b9a45bf9c2e9988ab9510cce4ed36a94d8`. The checker and self-test add a
+young-ledger cursor correction that is byte-identical to the candidate on
+`Summit-Cognitive/summit` PR #37933 at
+`f6ed6bef7e4430d493e7611e36b7b31838c2d077`:
 
-| File | SHA-256 |
-|---|---|
-| `.github/workflows/decrec-gate.yml` | `891b0714ad37c500f1e5a39ab64b987dfb2c0cb476bc28b2e9d55926803568aa` |
-| `scripts/ci/verify_decrec_admissibility.mjs` | `2a3e9ab50e7e4d3ba2959e0a69b735f2f01346a603e8c39cfe09b97dcadf08a8` |
-| `scripts/ci/verify_decrec_admissibility.selftest.mjs` | `e22343a3475828aa985ee2cac5e34a1a4284f84dd24f6738cb4cc0949dcc0a27` |
+| File | Source state | SHA-256 |
+|---|---|---|
+| `.github/workflows/decrec-gate.yml` | production `d985a2b` | `891b0714ad37c500f1e5a39ab64b987dfb2c0cb476bc28b2e9d55926803568aa` |
+| `scripts/ci/verify_decrec_admissibility.mjs` | PR #37933 candidate `f6ed6be` | `db7f634243f4976f4fb97ab6bab0f6f303d1c1ffca343f09d60bb4477a3a7879` |
+| `scripts/ci/verify_decrec_admissibility.selftest.mjs` | PR #37933 candidate `f6ed6be` | `72915bbf4e169d508a4494a9908ff7010dcf542ca1f7f0256ceb16567a0a6659` |
+
+This refresh is therefore a candidate, not production-aligned, until PR #37933
+is independently reviewed and merged and the resulting production `main` bytes
+are re-read. It must not be represented as a copy of current production before
+that condition is met.
 
 The workflow checks out these files from the base commit, not from the pull
 request it judges. A pull request can edit the gate, but those edited bytes do
 not judge that same pull request.
 
-The testbed currently requires the context by name with no GitHub App binding.
-Production binds the same context to GitHub Actions app ID `15368`. Before any
-external reviewer receives access, an administrator must apply that same app
-binding here and re-prove both the admitted and refused paths.
+The testbed requires the context from GitHub Actions app ID `15368`, matching
+production. The live branch-protection readback also retains administrator
+enforcement, one approving code-owner review, stale-review dismissal, and
+disabled force pushes and branch deletion.
 
 ## Expected demonstrations
 
@@ -39,17 +47,30 @@ binding here and re-prove both the admitted and refused paths.
 3. Editing the checker on the pull-request branch does not alter the result of
    that pull request because the base copy runs.
 
-## Refresh verification
+## App-bound verification
 
-The production-aligned checker self-test passes 26/26 cases. Running that exact
-checker against the existing testbed evidence produces both control paths:
+The candidate checker self-test passes 26/26 cases. Running those exact bytes
+against the existing evidence preserves both earlier control paths:
 
 - PR #1, head `82e134efa2986e3daba3acbae72d18a3b47f0d8c`, is `ADMITTED` and exits 0.
 - PR #2, head `2a6e9dd4f9a6d04972facf5412cc74675c1442cf`, is `REFUSED` and exits 1 because
   `minimum_source_count` and `source_type_diversity` fail.
 
-This proves the refreshed checker preserves the earlier verdicts. It does not
-replace the required new two-path proof after the GitHub App binding is applied.
+The bound required context was then re-proved with fresh pull requests. Each
+check run identifies its producer as GitHub Actions app ID `15368`:
+
+- PR #4, head `8c7d99621f49a5f80a4c637f274bd74658032d35`, received receipt
+  `rcpt_gh-Summit-Cognitive-decrec-gate-testbed-pr-4-8c7d996_mt847q20_880a0ae43a8045ce`
+  and check run `32805932766` succeeded with `ADMITTED`, `ACCEPTED`, and 9/9
+  policy checks passing.
+- PR #5, head `9cafd35824d2408d20e280e6c8e7047cbff9c0d9`, received receipt
+  `rcpt_gh-Summit-Cognitive-decrec-gate-testbed-pr-5-9cafd35_mt847qtp_fbf1d1cb952442a6`
+  and check run `32805933260` failed with `REFUSED`, `POLICY_FAILURE`,
+  `minimum_source_count`, and `source_type_diversity` failures.
+
+PR #4 is not a fresh positive merge proof because the independent-review gate
+still blocks it. PR #1 remains the earlier admitted-and-merged proof. PR #5 is
+open and refused by the required admissibility check.
 
 Public receipt metadata for this repository is expected. No Sythe user should
 be invited until the separate authorization instrument is reviewed and signed.
