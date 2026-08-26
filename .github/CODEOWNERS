@@ -1,3 +1,5 @@
 /.github/ @BrianCLong
 /scripts/ci/verify_decrec_admissibility.mjs @BrianCLong
 /scripts/ci/verify_decrec_admissibility.selftest.mjs @BrianCLong
+/scripts/ci/decrec_commitment.mjs @BrianCLong
+/scripts/ci/decrec-signing-key.pub.pem @BrianCLong

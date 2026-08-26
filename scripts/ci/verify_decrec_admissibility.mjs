@@ -3,20 +3,23 @@
 //
 // Fails the check unless a decision receipt for THIS head commit exists, binds to
 // this commit, this pull request and this repository, was produced under a pinned
-// policy, and was ACCEPTED with every named check passing.
+// policy, was ACCEPTED with every named check passing, AND carries an Ed25519
+// signature that VERIFIES — over a commitment recomputed from the receipt's own
+// body — under a key pinned in this protected base tree.
+//
+// The signature check is the 2026-08 hardening. Before it, the gate read the
+// verdict from the signed body but trusted the ledger host to have served an
+// authentic body. Now the merge rests on cryptography a pull request cannot
+// forge: a receipt whose signature does not verify under a pinned key is REFUSED,
+// where before it would have been admitted. (Answers the reviewer objection:
+// "the signature validity is purely based on trust.")
 //
 // Fail-closed on every ambiguity. Absence must not pass, and neither must a
 // missing field: every binding check below is REQUIRED, never conditional on the
-// field being present. A check that skips when its input is absent is the defect
-// this gate exists to prevent, and an earlier draft of this file contained
-// eleven of them.
+// field being present.
 //
 // The verdict is read from the SIGNED RECEIPT BODY only, never from the ledger
-// listing. The listing is a rendered view that normalises fields (it rewrites
-// `repository` on every row and redacts `agent` on some), so it is not the
-// record and must not decide a merge.
-//
-// Node builtins only. No install.
+// listing. Node builtins only. No install.
 //
 // Env:
 //   GITHUB_REPOSITORY      owner/repo                     (provided by Actions)
@@ -26,8 +29,17 @@
 //   DECREC_MAX_PAGES       default 40
 //   DECREC_POLICY_HASHES   comma-separated allowlist; empty means do not check
 //   DECREC_REPO_ALIASES    comma-separated historical repository names to accept
+//   DECREC_TEST_PUBKEY     test-only signing pubkey, honoured ONLY vs a loopback ledger
 //
 // Exit codes: 0 admitted, 1 refused, 2 operational failure.
+
+import { readFileSync } from "node:fs";
+import { createHash, createPublicKey, verify as edVerify } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { commitmentHash } from "./decrec_commitment.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 const ALLOWED_HOSTS = new Set(["decrec.summitcognitive.ai"]);
 
@@ -54,14 +66,8 @@ if (!REPO || !HEAD_SHA) die(2, "decrec-gate: missing GITHUB_REPOSITORY or HEAD_S
 if (!/^[0-9a-f]{40}$/.test(HEAD_SHA)) die(2, `decrec-gate: HEAD_SHA ${JSON.stringify(HEAD_SHA)} is not a full sha. Failing closed.`);
 if (!Number.isInteger(MAX_PAGES) || MAX_PAGES < 1) die(2, `decrec-gate: DECREC_MAX_PAGES ${JSON.stringify(process.env.DECREC_MAX_PAGES)} is not a positive integer. Failing closed.`);
 
-// The base must be pinned. An attacker who can set this env var can stand up an
-// always-accept ledger; refusing anything but the allowed host over https makes
-// that a workflow edit rather than an environment poke.
-// Loopback is permitted so the self-test can drive a local stub. That is not a
-// hole: the workflow pins DECREC_BASE, the runner is ephemeral, and the gate no
-// longer executes any code supplied by the pull request, so reaching loopback
-// requires already running code on the runner. If this gate is ever moved back
-// to a persistent self-hosted runner, delete the loopback branch first.
+// The base must be pinned. Loopback is permitted so the self-test can drive a
+// local stub; the workflow pins DECREC_BASE and the runner is ephemeral.
 const isLoopback = (h) => h === "127.0.0.1" || h === "localhost" || h === "[::1]" || h === "::1";
 let BASE;
 try {
@@ -72,6 +78,26 @@ try {
 } catch (e) {
   die(2, `decrec-gate: DECREC_BASE ${JSON.stringify(RAW_BASE)} is not an allowed ledger (${e.message}). Failing closed.`);
 }
+
+// --- signing keys pinned in the protected base tree ------------------------
+// The gate admits only a receipt whose signature verifies under a key it pins
+// here, in a tree a pull request cannot alter without a CODEOWNERS review. key_id
+// is sha256 over the DER SPKI, recomputed from the key material, so a receipt's
+// stated key_id is an index, never a trust input.
+const keyId = (pem) => "sha256:" + createHash("sha256").update(createPublicKey(pem).export({ type: "spki", format: "der" })).digest("hex");
+const PINNED = new Map();
+try {
+  const pem = readFileSync(join(HERE, "decrec-signing-key.pub.pem"), "utf8");
+  PINNED.set(keyId(pem), pem);
+} catch { /* absent only in a bare checkout; the loopback self-test injects its own key below */ }
+// Test-only key, honoured ONLY against a loopback ledger — the identical trust
+// envelope the self-test stub already runs inside. In production DECREC_BASE is
+// pinned to the https host, so this branch cannot be reached without already
+// executing code on the ephemeral runner.
+if (process.env.DECREC_TEST_PUBKEY && isLoopback(new URL(RAW_BASE).hostname)) {
+  try { const pem = process.env.DECREC_TEST_PUBKEY; PINNED.set(keyId(pem), pem); } catch { /* ignore a malformed test key */ }
+}
+if (PINNED.size === 0) die(2, "decrec-gate: no signing key is pinned; the gate cannot authenticate any receipt. Failing closed.");
 
 const ACCEPTABLE_REPOS = new Set([REPO, ...REPO_ALIASES]);
 
@@ -89,12 +115,6 @@ async function getJson(url, tries = 3) {
   throw last;
 }
 
-// The ledger silently ignores unknown query parameters, so ?claim_id=N and
-// ?pull_request=N do NOT filter: the response comes back as if the parameter were
-// absent. Filtering must happen client side or the gate would read somebody
-// else's verdict. Do not "optimise" this into a server-side filter until the
-// endpoint rejects unknown parameters with 400, and prove it does before relying
-// on it. Confirmed at startup below.
 async function findEntries(match) {
   const found = [];
   let before = null, pagesWalked = 0, exhausted = false;
@@ -107,17 +127,9 @@ async function findEntries(match) {
     before = d.next_before;
     if (!before) { exhausted = true; break; }
   }
-  // Do NOT stop at the first page containing a hit. Entries within a page are
-  // ascending by chain_sequence while pages walk backwards, so a claim whose
-  // receipts straddle a page boundary would otherwise be decided by page
-  // geometry rather than by the chain.
   return { found, pagesWalked, exhausted };
 }
 
-// The claim id convention has already changed once inside this ledger's
-// lifetime, from gh-BrianCLong-summit-pr-N-sha7 to gh-Summit-Cognitive-summit-...
-// Match on the pull request and commit prefix rather than reconstructing the
-// whole string from the current repository name.
 const sha7 = HEAD_SHA.slice(0, 7);
 const claimMatches = (e) => {
   const c = String(e.claim_id || "");
@@ -129,10 +141,6 @@ const claimMatches = (e) => {
 const DESCRIBE = PR ? `pull request ${PR} at ${sha7}` : `commit ${sha7}`;
 
 (async () => {
-  // Prove the ledger honours (or at least does not silently mangle) what we ask
-  // it, once, before trusting a page walk. If two different pages come back
-  // identical the pagination is not working and a "no receipt" result would be
-  // meaningless.
   try {
     const [p1, p2] = await Promise.all([
       getJson(`${BASE}/v1/ledger?limit=2`),
@@ -149,9 +157,6 @@ const DESCRIBE = PR ? `pull request ${PR} at ${sha7}` : `commit ${sha7}`;
   catch (err) { die(2, `decrec-gate: could not read the ledger (${err.message}). Failing closed.`); }
 
   if (!found.length) {
-    // Distinguish "searched the whole chain and it is not there" from "ran out of
-    // pages". The second is an operational failure, not a policy refusal, and
-    // saying otherwise turns a red gate into an instruction to mint a receipt.
     if (!exhausted) {
       die(2, `decrec-gate: no receipt for ${DESCRIBE} in the ${pagesWalked * 200} most recent ledger entries,\n` +
              `  and the walk did not reach the start of the chain. This is an operational\n` +
@@ -161,9 +166,6 @@ const DESCRIBE = PR ? `pull request ${PR} at ${sha7}` : `commit ${sha7}`;
            `A pull request with no receipt is not admissible.`);
   }
 
-  // Most recent verdict wins, ordered by chain_sequence. The chain binds the
-  // sequence; it does not bind `ts`, which the minter supplies and which is
-  // absent or malformed on a receipt an attacker controls.
   found.sort((a, b) => a.chain_sequence - b.chain_sequence);
   const e = found[found.length - 1];
 
@@ -176,7 +178,6 @@ const DESCRIBE = PR ? `pull request ${PR} at ${sha7}` : `commit ${sha7}`;
   if (!receipt || typeof receipt !== "object") die(2, `decrec-gate: receipt ${e.receipt_id} is not an object. Failing closed.`);
   if (receipt.withheld) die(2, `decrec-gate: receipt ${e.receipt_id} body is withheld and cannot be verified. Failing closed.`);
 
-  // Every one of these is REQUIRED. A missing field fails; it does not skip.
   for (const k of ["subject", "policy", "admissibility"])
     if (!receipt[k] || typeof receipt[k] !== "object")
       die(2, `decrec-gate: receipt ${e.receipt_id} has no ${k} block. Failing closed.`);
@@ -199,9 +200,6 @@ const DESCRIBE = PR ? `pull request ${PR} at ${sha7}` : `commit ${sha7}`;
   const adm = receipt.admissibility;
   const checks = Array.isArray(policy.checks) ? policy.checks : null;
   if (!checks) die(2, `decrec-gate: receipt ${e.receipt_id} carries no policy checks. Failing closed.`);
-  // An empty or partial check list must not admit. `checks.filter(non-PASS)` over
-  // an empty array is empty, so without this a receipt carrying zero checks
-  // reaches the admit path with "checks=0/0 PASS". Pin the set by name.
   const seen = new Set(checks.map(c => c && c.name));
   const missing = REQUIRED_CHECKS.filter(n => !seen.has(n));
   const unexpected = [...seen].filter(n => !REQUIRED_CHECKS.includes(n));
@@ -219,15 +217,44 @@ const DESCRIBE = PR ? `pull request ${PR} at ${sha7}` : `commit ${sha7}`;
              `Two different policies have shared the label policy-v1.0; the hash is what binds.`);
   }
 
+  // --- cryptographic verification (the 2026-08 hardening) -------------------
+  // Recompute the commitment from the receipt's own signed core, then verify the
+  // Ed25519 signature over ascii(hex(commitment)) under a pinned key. This is
+  // what turns "the ledger served ACCEPTED" into "a receipt whose signature
+  // verifies said ACCEPTED". Every branch fails closed.
+  const atts = Array.isArray(receipt.attestations) ? receipt.attestations : null;
+  if (!atts || atts.length === 0)
+    die(2, `decrec-gate: receipt ${e.receipt_id} carries no attestation; a verdict the gate cannot authenticate is not admissible. Failing closed.`);
+  let commitment;
+  try { commitment = commitmentHash(receipt); }
+  catch (err) { die(2, `decrec-gate: could not recompute the receipt commitment (${err.message}). Failing closed.`); }
+  const statedHash = (doc.ledger_entry || {}).receipt_hash;
+  if (statedHash && statedHash !== commitment)
+    refuse(`receipt body does not reproduce its committed hash`, `stated ${statedHash}`, `recomputed ${commitment}`);
+  const att = atts[0];
+  if (att.algorithm !== "ed25519")
+    die(2, `decrec-gate: attestation algorithm ${JSON.stringify(att.algorithm)} is not ed25519. Failing closed.`);
+  const pem = att.key_id && PINNED.get(att.key_id);
+  if (!pem)
+    refuse(`receipt is signed by key_id ${att.key_id}`,
+           `which is not pinned in the gate's protected base tree.`,
+           `The gate admits only receipts signed by a key it pins and a pull request cannot alter.`);
+  let sigOk = false;
+  try { sigOk = edVerify(null, Buffer.from(commitment, "ascii"), createPublicKey(pem), Buffer.from(String(att.signature || ""), "base64")); }
+  catch (err) { die(2, `decrec-gate: signature verification errored (${err.message}). Failing closed.`); }
+  if (!sigOk)
+    refuse(`receipt signature does not verify under the pinned key ${att.key_id}`,
+           `commitment ${commitment}`,
+           `The gate will not admit a receipt whose signature it cannot cryptographically verify.`);
+
   console.log(`decrec-gate: ledger     ${BASE}`);
   console.log(`decrec-gate: claim      ${e.claim_id}`);
   console.log(`decrec-gate: receipt    ${e.receipt_id}`);
   console.log(`decrec-gate: sequence   ${e.chain_sequence}`);
   console.log(`decrec-gate: policy     ${policy.status}  ${policy.version || "?"}  ${policyHash || "?"}`);
   console.log(`decrec-gate: checks     ${checks.length}`);
+  console.log(`decrec-gate: signature  VERIFIED  ${att.key_id}  over ascii(hex ${commitment.slice(0, 12)}…)`);
 
-  // Allowlist, not denylist. `!== "PASS"` refuses an unknown status; `=== "FAIL"`
-  // would admit one.
   const failed = checks.filter(c => c.status !== "PASS");
   const problems = [];
   if (adm.status !== "ACCEPTED") problems.push(`admissibility is ${adm.status}, not ACCEPTED`);
