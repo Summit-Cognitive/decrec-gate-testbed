@@ -1,14 +1,21 @@
 # DeRec admissibility-gate testbed
 
-This private repository is an isolated test target for Sythe Labs. It contains
-the production gate workflow and checker, inert placeholder content, and no
-production source, customer data, secrets, self-hosted runners, or credential to
-any Summit system.
+This public repository is an isolated, credential-free test target for Sythe
+Labs. It contains the production gate workflow and checker, inert placeholder
+content, and no production source, customer data, secrets, self-hosted runners,
+or credential to any Summit system.
 
 The control being tested is narrow: while the documented branch protection is
 in force, `decrec-gate / admissibility` must succeed before `main` can merge.
 A repository administrator can change branch protection; that is an
 administrative control-plane action, not a bypass of a still-enabled check.
+
+An unauthenticated reviewer can inspect the matched pair directly: [PR #1]
+was admitted by the required check and merged, while [PR #2] was refused by
+the same check and remains open with GitHub reporting it as blocked.
+
+[PR #1]: https://github.com/Summit-Cognitive/decrec-gate-testbed/pull/1
+[PR #2]: https://github.com/Summit-Cognitive/decrec-gate-testbed/pull/2
 
 ## Production-source identity
 
